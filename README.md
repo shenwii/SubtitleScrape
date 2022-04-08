@@ -6,4 +6,4 @@
 
 ## 使用方法
 
-    SubtitleScrape.py config.json
+    subtitle-scrape.py config.json
