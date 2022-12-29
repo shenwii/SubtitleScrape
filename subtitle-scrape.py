@@ -13,6 +13,7 @@ from xml.dom.minidom import parse
 import xml.dom.minidom
 from http_client import HttpClient
 from bs4 import BeautifulSoup
+import traceback
 
 #字幕文件后缀
 global SUB_EXT_LIST
@@ -38,7 +39,7 @@ class UncompressLib():
             file_ext_str = file_ext_str + "." + split_name[idx]
             idx = idx + 1
             if idx == len(split_name):
-                break;
+                break
         return file_ext_str
 
     def is_support(self, ext):
@@ -59,15 +60,34 @@ class UncompressLib():
             raise Exception("not supported archive extension.")
         uncompress_command = uncompress_command.replace("$archive_name", f"\"{zipfile}\"")
         os.chdir(dir_path)
-        if os.system(uncompress_command) != 0:
-            raise Exception("uncompress command failed.")
+        os.system(uncompress_command)
+        #if os.system(uncompress_command) != 0:
+        #    raise Exception("uncompress command failed.")
 
-class A4kSubtitle():
+class AssrtSubtitle():
     """
-    a4k.net字幕网站去爬字幕文件
+    伪射手
     """
-    def __init__(self, uncompress_lib):
+    def __init__(self, uncompress_lib, token, _type):
         self.__uncompress_lib = uncompress_lib
+        self.__token = token
+        self.__type = _type
+
+    """
+    遍历文件夹，再次解压
+    """
+    def __uncompress_again(self, dir_path, except_file):
+        for f in os.listdir(dir_path):
+            f_abs = os.path.join(dir_path, f)
+            if os.path.isfile(f_abs):
+                if f == except_file:
+                    continue
+                name, ext = os.path.splitext(f)
+                if self.__uncompress_lib.is_support(ext):
+                    self.__uncompress_lib.uncompress(f, dir_path)
+            else:
+                self.__uncompress_again(f_abs, except_file)
+
 
     """
     遍历文件夹，找到所有字幕文件
@@ -86,42 +106,44 @@ class A4kSubtitle():
     根据关键词，去a4k上爬字幕下载到指定的tmp文件夹
     """
     def download(self, keyword, tmp_dir):
-        A4K_API = "https://www.a4k.net"
+        API_URL = "https://api.assrt.net/v1"
         http_client = HttpClient()
-        headers, data = http_client.get(A4K_API + "/search", params = {"term": keyword})
-        soup = BeautifulSoup(data, "html.parser")
-        results = soup.find_all("li", class_ = "item")
+        headers, data = http_client.get(API_URL + "/sub/search", params = {
+            "token": self.__token,
+            "q": keyword
+            })
+        resData = json.loads(data.decode("utf-8"))
+        print(resData)
+        if(resData["status"] != 0):
+            return []
         i = 0
+        subs = resData["sub"]["subs"]
         while True:
             if i > 5:
                 break
-            it = results[random.randint(0, len(results) - 1)]
-            content_ele = it.select("div[class=\"content\"]")
-            if content_ele is None or len(content_ele) != 1:
+            if len(subs) == 0:
+                break
+            sub = subs[random.randint(0, len(subs) - 1)]
+            i = i + 1
+            if not "lang" in sub:
                 i = i + 1
                 continue
-            content_ele = content_ele[0].h3.a
-            #获取字幕的详情页URL
-            url = urllib.parse.urljoin(A4K_API, content_ele.get("href"))
-            sys.stdout.write(f"subtitle detail url = {url}\n")
-            sys.stdout.flush()
-            #获取该字幕所有的语言
-            langs = []
-            for lit in it.select("div[class=\"language\"]")[0].select("i"):
-                langs.append(lit.get("data-content"))
-            if "简体" in langs or "双语" in langs:
-                headers, data = http_client.get(url)
-                soup = BeautifulSoup(data, "html.parser")
-                download_url = soup.find("a", class_ = "ui green button").get("href")
-                #如果不是http和https开头的，则把前缀拼上去
-                if not (download_url.startswith("http://") or download_url.startswith("https://")):
-                    download_url = urllib.parse.urljoin(A4K_API, download_url)
-                sys.stdout.write(f"download url = {download_url}\n")
-                sys.stdout.flush()
-                filename = urllib.parse.unquote_plus(download_url.split("/")[-1])
+            if sub["lang"]["desc"].count("简") > 0 or sub["lang"]["desc"].count("繁") > 0 or sub["lang"]["desc"].count("双语") > 0:
+                #https://api.assrt.net/v1/sub/detail?token=TOKEN&id=602333
+                headers, data = http_client.get(API_URL + "/sub/detail", params = {
+                    "token": self.__token,
+                    "id": sub["id"]
+                    })
+                resData = json.loads(data.decode("utf-8"))
+                if resData["status"] != 0 or len(resData["sub"]["subs"]) == 0:
+                    i = i + 1
+                    continue
+                filename = resData["sub"]["subs"][0]["filename"]
                 name, ext = os.path.splitext(filename)
                 if ext not in SUB_EXT_LIST and not self.__uncompress_lib.is_support(ext):
+                    i = i + 1
                     continue
+                download_url = resData["sub"]["subs"][0]["url"]
                 headers, data = http_client.get(download_url)
                 tempfile = os.path.join(tmp_dir, filename)
                 with open(tempfile, "wb") as f:
@@ -130,12 +152,13 @@ class A4kSubtitle():
                     return [tempfile]
                 else:
                     self.__uncompress_lib.uncompress(tempfile, tmp_dir)
+                    self.__uncompress_again(tmp_dir, tempfile)
                     subs = []
                     self.__find_subs(tmp_dir, subs)
                     if len(subs) == 0:
+                        i = i + 1
                         continue
                     return subs
-            i = i + 1
         return []
 
 def show_usage():
@@ -178,8 +201,8 @@ def download_movie_subtitle(dir_path, video_name, nfo_file):
     sys.stdout.flush()
     tmp_dir = tempfile.mkdtemp()
     try:
-        a4k = A4kSubtitle(UNCOMPRESS_LIB)
-        subs = a4k.download(keyword, tmp_dir)
+        assrt = AssrtSubtitle(UNCOMPRESS_LIB, ASSRT_TOKEN, 1)
+        subs = assrt.download(keyword, tmp_dir)
         for sub in subs:
             sub_name = os.path.basename(sub)
             sub_name_split = sub_name.split(".")
@@ -191,7 +214,7 @@ def download_movie_subtitle(dir_path, video_name, nfo_file):
             sys.stdout.flush()
             shutil.move(sub, new_sub)
     except Exception as e:
-        sys.stderr.write(f"a4k download except: {e}\n")
+        traceback.print_exc()
         sys.stderr.flush()
     finally:
         shutil.rmtree(tmp_dir)
@@ -205,6 +228,18 @@ def download_tv_subtitle(dir_path, season, nfo_file):
         season              季
         nfo_file            nfo文件
     """
+    scraped = True
+    for f in os.listdir(dir_path):
+        name, ext = os.path.splitext(f)
+        if ext.lower() not in VIDEO_EXT_LIST:
+            continue
+        if not check_subtitle_file_exist(dir_path, name):
+            scraped = False
+            break
+    if scraped:
+        sys.stdout.write(f"[{dir_path}] subtitle already exists.\n")
+        sys.stdout.flush()
+        return
     season_re = re.compile("([sS]\d+[eE]\d+)")
     dom_tree = xml.dom.minidom.parse(nfo_file)
     document = dom_tree.documentElement
@@ -216,8 +251,8 @@ def download_tv_subtitle(dir_path, season, nfo_file):
     sys.stdout.flush()
     tmp_dir = tempfile.mkdtemp()
     try:
-        a4k = A4kSubtitle(UNCOMPRESS_LIB)
-        subs = a4k.download(keyword, tmp_dir)
+        assrt = AssrtSubtitle(UNCOMPRESS_LIB, ASSRT_TOKEN, 2)
+        subs = assrt.download(keyword, tmp_dir)
         for f in os.listdir(dir_path):
             name, ext = os.path.splitext(f)
             if ext.lower() not in VIDEO_EXT_LIST:
@@ -242,12 +277,15 @@ def download_tv_subtitle(dir_path, season, nfo_file):
                         new_sub = os.path.join(dir_path, f"{name}.chs.{sub_name_split[-1]}")
                     else:
                         new_sub = os.path.join(dir_path, f"{name}.{sub_name_split[-2]}.{sub_name_split[-1]}")
-                    sys.stdout.write(f"{sub} -> {new_sub}\n")
-                    sys.stdout.flush()
+                    try:
+                        sys.stdout.write(f"{sub} -> {new_sub}\n")
+                        sys.stdout.flush()
+                    except:
+                        pass
                     shutil.move(sub, new_sub)
                     subs.remove(sub)
     except Exception as e:
-        sys.stderr.write(f"a4k download except: {e}\n")
+        traceback.print_exc()
         sys.stderr.flush()
     finally:
         shutil.rmtree(tmp_dir)
@@ -260,6 +298,8 @@ def dir_scrape(dir_path, _type):
         dir_path            文件夹路径
         _type               类型：1：电影、2：电视剧
     """
+    if os.path.exists(os.path.join(dir_path, ".skip_sub")):
+        return
     for f in os.listdir(dir_path):
         f_abs = os.path.join(dir_path, f)
         if os.path.isfile(f_abs):
@@ -294,6 +334,8 @@ def dir_scrape(dir_path, _type):
             if not os.path.exists(nfo_file):
                 dir_scrape(f_abs, _type)
                 continue
+            if os.path.exists(os.path.join(f_abs, ".skip_sub")):
+                continue
             for d in os.listdir(f_abs):
                 if not d.startswith("Season_"):
                     continue
@@ -306,8 +348,12 @@ def subtitle_scrape(conf):
     """
     if "UncompressLib" not in conf:
         raise Exception("UncompressLib key not exists.")
+    if "AssrtToken" not in conf:
+        raise Exception("AssrtToken key not exists.")
     global UNCOMPRESS_LIB
     UNCOMPRESS_LIB = UncompressLib(conf["UncompressLib"])
+    global ASSRT_TOKEN
+    ASSRT_TOKEN = conf["AssrtToken"]
     if "MovieDir" in conf:
         conf_movie_dir = conf["MovieDir"]
         if type(conf_movie_dir) == str:

@@ -1,10 +1,11 @@
 {
     "MovieDir": ["/tmp/movies"],
     "TvDir": ["/tmp/shows"],
+    "AssrtToken": "--AssrtToken--",
     "UncompressLib": {
-        ".rar": "unrar x $archive_name",
-        ".zip": "unzip $archive_name",
-        ".7z": "7z x $archive_name",
+        ".rar": "unrar x -y $archive_name",
+        ".zip": "unzip -o $archive_name",
+        ".7z": "7z x -y $archive_name",
         ".tar": "tar -xf $archive_name",
         ".tar.gz": "tar -xzf $archive_name",
         ".tar.bz2": "tar -xjf $archive_name",
